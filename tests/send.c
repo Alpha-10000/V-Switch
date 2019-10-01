@@ -21,7 +21,7 @@
 int main (int argc, char *argv[])
 {
     if ( argc < 2 ) {
-	printf("Usage: ./send INTF_NAME");
+	printf("Usage: ./send INTF_NAME\n");
 	exit(1);
     }
     char *if_name = argv[1];
@@ -54,22 +54,25 @@ int main (int argc, char *argv[])
     char eth_buf[MAX_SZ];
     int eth_len = 0;
     memset(eth_buf, 0, MAX_SZ);
-    struct ether_header *eh = (struct ether_header *)eth_buf;
-    eh->ether_type = (ETH_P_ALL);
-    eh->ether_shost[0] = MAC_A;
-    eh->ether_shost[1] = MAC_B;
-    eh->ether_shost[2] = MAC_C;
-    eh->ether_shost[3] = MAC_D;
-    eh->ether_shost[4] = MAC_E;
-    eh->ether_shost[5] = MAC_F;
-    eh->ether_dhost[0] = mac[0];
-    eh->ether_dhost[1] = mac[1];
-    eh->ether_dhost[2] = mac[2];
-    eh->ether_dhost[3] = mac[3];
-    eh->ether_dhost[4] = mac[4];
-    eh->ether_dhost[5] = mac[5];
+    struct ethhdr *eh = (struct ethhdr *)eth_buf;
 
-    eth_len += sizeof (struct ether_header);
+    eh->h_dest[0] = mac[0];
+    eh->h_dest[1] = mac[1];
+    eh->h_dest[2] = mac[2];
+    eh->h_dest[3] = mac[3];
+    eh->h_dest[4] = mac[4];
+    eh->h_dest[5] = mac[5];
+
+    eh->h_source[0] = MAC_A;
+    eh->h_source[1] = MAC_B;
+    eh->h_source[2] = MAC_C;
+    eh->h_source[3] = MAC_D;
+    eh->h_source[4] = MAC_E;
+    eh->h_source[5] = MAC_F;
+
+    eh->h_proto = htons(ETH_P_ALL);
+
+    eth_len += sizeof (struct ethhdr);
     eth_buf[eth_len++] = 0xAA;
     eth_buf[eth_len++] = 0xBB;
     eth_buf[eth_len++] = 0xCC;
@@ -77,14 +80,12 @@ int main (int argc, char *argv[])
     eth_buf[eth_len++] = 0xEE;
     eth_buf[eth_len++] = 0xFF;
 
-
-    unsigned int index = if_nametoindex(argv[1]);
     struct sockaddr_ll sockaddr;
     memset(&sockaddr, 0, sizeof (struct sockaddr_ll));
 
     sockaddr.sll_family = AF_PACKET;
     sockaddr.sll_protocol = htons(ETH_P_ALL);
-    sockaddr.sll_ifindex = if_nametoindex(argv[1]);
+    sockaddr.sll_ifindex = if_nametoindex(if_name);
     sockaddr.sll_halen = ETH_ALEN;
 
     if ( sendto(sockfd, eth_buf, eth_len, 0, (struct sockaddr*)&sockaddr, sizeof(struct sockaddr_ll)) < 0 ) {

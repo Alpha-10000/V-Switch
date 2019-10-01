@@ -9,4 +9,6 @@ else
     echo "Creating interface '$vethA' in namespace '$2'..."
     echo "Creating interface '$vethB' in namespace '$3'..."
     ip link add "$vethA" netns "$2" type veth peer name "$vethB" netns "$3"
+    ip netns exec "$2" ip link set "$vethA" up
+    ip netns exec "$3" ip link set "$vethB" up
 fi
