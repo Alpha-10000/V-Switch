@@ -13,8 +13,9 @@ import "os"
 import S "syscall"
 
 type Port struct {
-	idx int
-	name string
+	intfIdx int
+	intfName string
+	portNum int
 }
 
 const bufSize = 1514
@@ -23,7 +24,7 @@ func htons(i uint16) uint16 {
 	return (i<<8)&0xff00 | i>>8
 }
 
-func listen(intf string) (int) {
+func listen(port Port) (int) {
 
 	sockFd, err := S.Socket(S.AF_PACKET, S.SOCK_RAW | S.SOCK_NONBLOCK, int(htons(S.ETH_P_ALL)))
 	if err != nil {
@@ -31,11 +32,9 @@ func listen(intf string) (int) {
 		os.Exit(1)
 	}
 
-	ifIndex := int((C.if_nametoindex(C.CString(intf))))
-
 	sockAddr := S.SockaddrLinklayer {
 		Protocol: htons(S.ETH_P_ALL),
-		Ifindex: ifIndex,
+		Ifindex: port.intfIdx,
 		Halen: C.ETH_ALEN,
 	}
 
@@ -47,6 +46,29 @@ func listen(intf string) (int) {
 	return sockFd
 }
 
+func handleFrame(inFd int, ports map[int]Port) {
+	buf := make([]byte, bufSize)
+	ctrl := make([]byte, 1024)
+	n, _, _, _, _ := S.Recvmsg(inFd, buf, ctrl, 0)
+	for outFd, p := range(ports) {
+		if outFd == inFd {
+			continue
+		}
+		
+		outSockAddr := S.SockaddrLinklayer {
+			Ifindex: p.intfIdx,
+			Halen: C.ETH_ALEN,
+		}
+
+		err := S.Sendto(outFd, buf, 0, &outSockAddr)
+		fmt.Println("SENDTO", ports[outFd], n)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}
+}
+
 func dispatch(opts *Opts) {
 	ports := make(map[int]Port)
 	
@@ -56,10 +78,12 @@ func dispatch(opts *Opts) {
 		os.Exit(1)
 	}
 
-	for idx, intf := range(opts.intfs) {
+	for idx, intfName := range(opts.intfs) {
 
-		sockFd := listen(intf)
-
+		intfIdx := int((C.if_nametoindex(C.CString(intfName))))
+		port := Port{intfIdx, intfName, idx}
+		sockFd := listen(port)
+		ports[sockFd] = port
 		event := S.EpollEvent {
 			Events: (S.EPOLLIN | (S.EPOLLET & 0xffffffff)),
 			Fd: int32(sockFd),
@@ -69,13 +93,10 @@ func dispatch(opts *Opts) {
 			fmt.Println(err)
 			os.Exit(1)
 		}
-
-		ports[sockFd] = Port{idx, intf}
 	}
 
 	events := make([]S.EpollEvent, len(opts.intfs))
 	for true {
-
 		nfds, err := S.EpollWait(epollFd, events, -1)
 		if err != nil {
 			fmt.Println(err)
@@ -83,11 +104,8 @@ func dispatch(opts *Opts) {
 		}
 		for i := 0; i < nfds; i++ {
 			fd := int(events[i].Fd)
-			fmt.Println("IN", ports[fd])
-			buf := make([]byte, bufSize)
-			ctrl := make([]byte, 1024)
-			S.Recvmsg(fd, buf, ctrl, 0)
-			fmt.Println("OUT", ports[fd])
+			fmt.Println("RECVFROM", ports[fd])
+			handleFrame(fd, ports)
 		}
 	}
 }
