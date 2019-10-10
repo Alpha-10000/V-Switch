@@ -3,10 +3,6 @@ package main
 // #include <arpa/inet.h>
 // #include <net/if.h>
 // #include <net/ethernet.h>
-// #include <sys/epoll.h>
-// #include <sys/socket.h>
-// #include <linux/if_arp.h>
-// #include <linux/if_packet.h>
 import "C"
 import "fmt"
 import "os"
@@ -14,27 +10,23 @@ import S "syscall"
 
 type Port struct {
 	intfIdx int
-	intfName string
-	portNum int
+	num int
+	sockFd int
 }
 
 const bufSize = 1514
 
-func htons(i uint16) uint16 {
-	return (i<<8)&0xff00 | i>>8
-}
+func listen(intfIndex int) (int) {
 
-func listen(port Port) (int) {
-
-	sockFd, err := S.Socket(S.AF_PACKET, S.SOCK_RAW | S.SOCK_NONBLOCK, int(htons(S.ETH_P_ALL)))
+	sockFd, err := S.Socket(S.AF_PACKET, S.SOCK_RAW | S.SOCK_NONBLOCK, int(C.htons(S.ETH_P_ALL)))
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 
 	sockAddr := S.SockaddrLinklayer {
-		Protocol: htons(S.ETH_P_ALL),
-		Ifindex: port.intfIdx,
+		Protocol: uint16(C.htons(S.ETH_P_ALL)),
+		Ifindex: intfIndex,
 		Halen: C.ETH_ALEN,
 	}
 
@@ -46,31 +38,24 @@ func listen(port Port) (int) {
 	return sockFd
 }
 
-func handleFrame(inFd int, ports map[int]Port) {
-	buf := make([]byte, bufSize)
-	ctrl := make([]byte, 1024)
-	n, _, _, _, _ := S.Recvmsg(inFd, buf, ctrl, 0)
-	for outFd, p := range(ports) {
-		if outFd == inFd {
-			continue
-		}
-		
-		outSockAddr := S.SockaddrLinklayer {
-			Ifindex: p.intfIdx,
-			Halen: C.ETH_ALEN,
-		}
+func transfer(data []byte, port *Port) {
 
-		err := S.Sendto(outFd, buf, 0, &outSockAddr)
-		fmt.Println("SENDTO", ports[outFd], n)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
+	outSockAddr := S.SockaddrLinklayer {
+		Ifindex: port.intfIdx,
+		Halen: C.ETH_ALEN,
+	}
+
+	fmt.Println("SENDTO", port, len(data))
+	err := S.Sendto(port.sockFd, data, 0, &outSockAddr)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
 	}
 }
 
 func dispatch(opts *Opts) {
-	ports := make(map[int]Port)
+	sockToPorts := make(map[int]Port)
+	FIB := make(map[string]Port)
 	
 	epollFd, err := S.EpollCreate1(0)
 	if err != nil {
@@ -78,12 +63,11 @@ func dispatch(opts *Opts) {
 		os.Exit(1)
 	}
 
-	for idx, intfName := range(opts.intfs) {
+	for idxNum, intfName := range(opts.intfs) {
 
 		intfIdx := int((C.if_nametoindex(C.CString(intfName))))
-		port := Port{intfIdx, intfName, idx}
-		sockFd := listen(port)
-		ports[sockFd] = port
+		sockFd := listen(intfIdx)
+		sockToPorts[sockFd] = Port{intfIdx, idxNum, sockFd}
 		event := S.EpollEvent {
 			Events: (S.EPOLLIN | (S.EPOLLET & 0xffffffff)),
 			Fd: int32(sockFd),
@@ -102,10 +86,26 @@ func dispatch(opts *Opts) {
 			fmt.Println(err)
 			os.Exit(1)
 		}
+
 		for i := 0; i < nfds; i++ {
-			fd := int(events[i].Fd)
-			fmt.Println("RECVFROM", ports[fd])
-			handleFrame(fd, ports)
+			inFd := int(events[i].Fd)
+			buf := make([]byte, bufSize)
+			ctrl := make([]byte, 1024)
+
+			n, _, _, _, _ := S.Recvmsg(inFd, buf, ctrl, 0)
+			fmt.Println("RECVFROM", sockToPorts[inFd], n)
+
+			port, err := handleFrame(buf, sockToPorts[inFd], FIB)
+			if err == nil {
+				transfer(buf, port)
+				continue
+			}
+			for outFd, outPort := range(sockToPorts) {
+				if outFd == inFd {
+					continue
+				}
+				transfer(buf, &outPort)
+			}
 		}
 	}
 }

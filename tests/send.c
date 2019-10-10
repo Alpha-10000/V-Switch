@@ -58,7 +58,9 @@ int main (int argc, char *argv[])
     union ethframe frame;
     memcpy(frame.field.header.h_dest, MAC, sizeof (MAC));
     memcpy(frame.field.header.h_source, mac, sizeof (mac));
+
     frame.field.header.h_proto = htons(ETH_P_802_2);
+
     unsigned char payload[] = { 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
     memcpy(frame.field.data, payload, sizeof (payload));
 
@@ -67,7 +69,6 @@ int main (int argc, char *argv[])
     memset(&sockaddr, 0, sizeof (struct sockaddr_ll));
 
     sockaddr.sll_family = AF_PACKET;
-    //sockaddr.sll_protocol = htons(ETH_P_ALL);
     sockaddr.sll_ifindex = if_nametoindex(if_name);
     sockaddr.sll_halen = ETH_ALEN;
 
