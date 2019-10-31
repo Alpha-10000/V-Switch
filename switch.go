@@ -3,6 +3,7 @@ package main
 // #include <arpa/inet.h>
 // #include <net/if.h>
 // #include <net/ethernet.h>
+// #include <linux/if_packet.h>
 import "C"
 import "fmt"
 import "os"
@@ -12,6 +13,8 @@ type Port struct {
 	intfIdx int
 	num int
 	sockFd int
+	vlanId uint8
+	mode Mode
 }
 
 const bufSize = 1514
@@ -24,6 +27,11 @@ func listen(intfIndex int) (int) {
 		os.Exit(1)
 	}
 
+	err = S.SetsockoptInt(sockFd, S.SOL_PACKET, int(C.PACKET_AUXDATA), 1)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 	sockAddr := S.SockaddrLinklayer {
 		Protocol: uint16(C.htons(S.ETH_P_ALL)),
 		Ifindex: intfIndex,
@@ -39,6 +47,12 @@ func listen(intfIndex int) (int) {
 }
 
 func transfer(data []byte, port *Port) {
+	if port.mode == Access {
+		if getVlanId(data) != port.vlanId {
+			return
+		}
+		data = untagFrame(data)
+	}
 
 	outSockAddr := S.SockaddrLinklayer {
 		Ifindex: port.intfIdx,
@@ -67,11 +81,15 @@ func dispatch(opts *Opts) {
 
 		intfIdx := int((C.if_nametoindex(C.CString(intfName))))
 		sockFd := listen(intfIdx)
-		sockToPorts[sockFd] = Port{intfIdx, idxNum, sockFd}
+		vlanId, mode := configPort(intfName, opts)
+		sockToPorts[sockFd] = Port{intfIdx, idxNum, sockFd, vlanId, mode}
+		fmt.Println(sockToPorts[sockFd], intfName)
+
 		event := S.EpollEvent {
 			Events: (S.EPOLLIN | (S.EPOLLET & 0xffffffff)),
 			Fd: int32(sockFd),
 		}
+
 		err := S.EpollCtl(epollFd, S.EPOLL_CTL_ADD, sockFd, &event)
 		if err != nil {
 			fmt.Println(err)
@@ -90,12 +108,16 @@ func dispatch(opts *Opts) {
 		for i := 0; i < nfds; i++ {
 			inFd := int(events[i].Fd)
 			buf := make([]byte, bufSize)
-			ctrl := make([]byte, 1024)
+			ctrl := make([]byte,1024)
 
-			n, _, _, _, _ := S.Recvmsg(inFd, buf, ctrl, 0)
-			fmt.Println("RECVFROM", sockToPorts[inFd], n)
+			n, oob, _, _, err := S.Recvmsg(inFd, buf, ctrl, 0)
+			if err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
+			fmt.Println("RECVFROM", sockToPorts[inFd], n, oob)
 
-			port, err := handleFrame(buf, sockToPorts[inFd], FIB)
+			buf, port, err := handleFrame(buf, ctrl[:oob], sockToPorts[inFd], FIB)
 			if err == nil {
 				transfer(buf, port)
 				continue
